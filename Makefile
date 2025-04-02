@@ -1,28 +1,45 @@
-# VCS Makefile for TileLink-UL to AXI4 Bridge
+# VCS simulation Makefile
 
-# VCS flags
-VCS_FLAGS = -full64 -sverilog -debug_all -timescale=1ns/1ps -R
+# Compiler and flags
+VCS = vcs
+VCS_FLAGS = -full64 +v2k -timescale=1ns/1ps -debug_pp +vcd
 
 # Source files
-SRCS = tlul_to_axi4.sv tlul_to_axi4_tb.sv
+SRCS = tlul_to_axi4.v tlul_to_axi4_tb.v
+
+# Simulation executable
+SIMV = simv
+
+# VCD file
+VCD_FILE = tlul_to_axi4.vcd
 
 # Default target
-all: compile run
+all: sim
 
-# Compile target
-compile:
-	vcs $(VCS_FLAGS) $(SRCS) -o simv
+# Compile and run simulation
+sim: $(SRCS)
+	$(VCS) $(VCS_FLAGS) $(SRCS)
+	./$(SIMV)
 
-# Run target
-run:
-	./simv
+# View waveform
+wave: $(VCD_FILE)
+	gtkwave $(VCD_FILE)
 
-# Clean target
+# Clean generated files
 clean:
-	rm -rf simv* csrc* *.vpd *.vcd *.log
+	rm -rf $(SIMV) $(VCD_FILE) csrc simv.daidir ucli.key DVEfiles
 
-# Waveform viewing target
-wave:
-	dve -vpd vcdplus.vpd
+# Clean and rebuild
+rebuild: clean sim
 
-.PHONY: all compile run clean wave 
+# Help
+help:
+	@echo "Available targets:"
+	@echo "  all    - Build everything (default)"
+	@echo "  sim    - Compile and run simulation"
+	@echo "  wave   - View waveform in GTKWave"
+	@echo "  clean  - Remove generated files"
+	@echo "  rebuild- Clean and rebuild"
+	@echo "  help   - Show this help message"
+
+.PHONY: all sim wave clean rebuild help 

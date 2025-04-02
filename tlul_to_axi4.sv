@@ -1,12 +1,12 @@
-// TileLink-UL to AXI4 Bridge
+// TileLink-UL to AXI4 Bridge Implementation
 
 module tlul_to_axi4 #(
-    parameter int unsigned DataWidth = 64,
-    parameter int unsigned AddrWidth = 32,
-    parameter int unsigned SourceWidth = 8,
-    parameter int unsigned SinkWidth = 8,
-    parameter int unsigned MaxSize = 6,
-    parameter int unsigned IdWidth = 8
+    parameter int DataWidth = 64,
+    parameter int AddrWidth = 32,
+    parameter int SourceWidth = 8,
+    parameter int SinkWidth = 8,
+    parameter int MaxSize = 6,
+    parameter int IdWidth = 8
 ) (
     // Clock and reset
     input  logic clk_i,
@@ -47,204 +47,123 @@ module tlul_to_axi4 #(
     output logic [3:0] axi_awqos,
     output logic [3:0] axi_awregion,
     output logic axi_awvalid,
-    input  logic axi_awready,
-
-    output logic [IdWidth-1:0] axi_wid,
-    output logic [DataWidth-1:0] axi_wdata,
-    output logic [DataWidth/8-1:0] axi_wstrb,
-    output logic axi_wlast,
-    output logic axi_wvalid,
-    input  logic axi_wready,
-
-    input  logic [IdWidth-1:0] axi_bid,
-    input  logic [1:0] axi_bresp,
-    input  logic axi_bvalid,
-    output logic axi_bready,
-
-    output logic [IdWidth-1:0] axi_arid,
-    output logic [AddrWidth-1:0] axi_araddr,
-    output logic [7:0] axi_arlen,
-    output logic [2:0] axi_arsize,
-    output logic [1:0] axi_arburst,
-    output logic axi_arlock,
-    output logic [3:0] axi_arcache,
-    output logic [2:0] axi_arprot,
-    output logic [3:0] axi_arqos,
-    output logic [3:0] axi_arregion,
-    output logic axi_arvalid,
-    input  logic axi_arready,
-
-    input  logic [IdWidth-1:0] axi_rid,
-    input  logic [DataWidth-1:0] axi_rdata,
-    input  logic [1:0] axi_rresp,
-    input  logic axi_rlast,
-    input  logic axi_rvalid,
-    output logic axi_rready
+    input  logic axi_awready
 );
 
     // Internal state
     typedef enum logic [2:0] {
-        IDLE,
-        WRITE_ADDR,
-        WRITE_DATA,
-        WRITE_RESP,
-        READ_ADDR,
-        READ_DATA
+        IDLE = 3'h0,
+        DECODE = 3'h1,
+        WRITE = 3'h2,
+        READ = 3'h3,
+        RESPONSE = 3'h4
     } state_t;
 
-    state_t state_q, state_d;
-    logic [IdWidth-1:0] id_q, id_d;
-    logic [SourceWidth-1:0] source_q, source_d;
-    logic [AddrWidth-1:0] addr_q, addr_d;
-    logic [DataWidth-1:0] data_q, data_d;
-    logic [DataWidth/8-1:0] mask_q, mask_d;
-    logic [MaxSize-1:0] size_q, size_d;
-    logic [2:0] opcode_q, opcode_d;
+    // Opcode definitions
+    typedef enum logic [2:0] {
+        PutFullData = 3'h1,
+        PutPartialData = 3'h2,
+        Acquire = 3'h3,
+        Get = 3'h4,
+        ArithmeticData = 3'h5,
+        LogicalData = 3'h6,
+        Intent = 3'h7,
+        Probe = 3'h0
+    } opcode_t;
 
-    // State machine
+    state_t state, next_state;
+    logic [SourceWidth-1:0] current_source;
+    logic [AddrWidth-1:0] current_address;
+    logic [DataWidth-1:0] current_data;
+    logic [MaxSize-1:0] current_size;
+    logic [2:0] current_opcode;
+    logic [DataWidth/8-1:0] current_mask;
+    logic [2:0] current_param;
+    logic [3:0] current_corrupt;
+
+    // State machine and register updates
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
-            state_q <= IDLE;
-            id_q <= '0;
-            source_q <= '0;
-            addr_q <= '0;
-            data_q <= '0;
-            mask_q <= '0;
-            size_q <= '0;
-            opcode_q <= '0;
+            state <= IDLE;
+            current_source <= '0;
+            current_address <= '0;
+            current_data <= '0;
+            current_size <= '0;
+            current_opcode <= '0;
+            current_mask <= '0;
+            current_param <= '0;
+            current_corrupt <= '0;
         end else begin
-            state_q <= state_d;
-            id_q <= id_d;
-            source_q <= source_d;
-            addr_q <= addr_d;
-            data_q <= data_d;
-            mask_q <= mask_d;
-            size_q <= size_d;
-            opcode_q <= opcode_d;
+            state <= next_state;
+            if (state == IDLE && tl_a_valid) begin
+                current_source <= tl_a_source;
+                current_address <= tl_a_address;
+                current_data <= tl_a_data;
+                current_size <= tl_a_size;
+                current_opcode <= tl_a_opcode;
+                current_mask <= tl_a_mask;
+                current_param <= tl_a_param;
+                current_corrupt <= tl_a_corrupt;
+            end
         end
     end
 
     // Next state logic
     always_comb begin
-        state_d = state_q;
-        id_d = id_q;
-        source_d = source_q;
-        addr_d = addr_q;
-        data_d = data_q;
-        mask_d = mask_q;
-        size_d = size_q;
-        opcode_d = opcode_q;
-
-        case (state_q)
+        case (state)
             IDLE: begin
-                if (tl_a_valid) begin
-                    case (tl_a_opcode)
-                        3'b000: begin // Get
-                            state_d = READ_ADDR;
-                            id_d = tl_a_source;
-                            source_d = tl_a_source;
-                            addr_d = tl_a_address;
-                            size_d = tl_a_size;
-                            opcode_d = tl_a_opcode;
-                        end
-                        3'b001: begin // PutFullData
-                            state_d = WRITE_ADDR;
-                            id_d = tl_a_source;
-                            source_d = tl_a_source;
-                            addr_d = tl_a_address;
-                            data_d = tl_a_data;
-                            mask_d = tl_a_mask;
-                            size_d = tl_a_size;
-                            opcode_d = tl_a_opcode;
-                        end
-                    endcase
-                end
+                next_state = tl_a_valid ? DECODE : IDLE;
             end
 
-            WRITE_ADDR: begin
-                if (axi_awready) begin
-                    state_d = WRITE_DATA;
-                end
+            DECODE: begin
+                case (tl_a_opcode)
+                    PutFullData, PutPartialData: next_state = WRITE;
+                    Get: next_state = READ;
+                    default: next_state = RESPONSE;
+                endcase
             end
 
-            WRITE_DATA: begin
-                if (axi_wready) begin
-                    state_d = WRITE_RESP;
-                end
+            WRITE: begin
+                next_state = axi_awready ? RESPONSE : WRITE;
             end
 
-            WRITE_RESP: begin
-                if (axi_bvalid) begin
-                    state_d = IDLE;
-                end
+            READ: begin
+                next_state = RESPONSE;
             end
 
-            READ_ADDR: begin
-                if (axi_arready) begin
-                    state_d = READ_DATA;
-                end
+            RESPONSE: begin
+                next_state = tl_d_ready ? IDLE : RESPONSE;
             end
 
-            READ_DATA: begin
-                if (axi_rvalid && axi_rlast) begin
-                    state_d = IDLE;
-                end
-            end
+            default: next_state = IDLE;
         endcase
     end
 
-    // AXI4 Write Address Channel
-    assign axi_awid = id_q;
-    assign axi_awaddr = addr_q;
-    assign axi_awlen = 8'h0; // Single transfer
-    assign axi_awsize = size_q;
-    assign axi_awburst = 2'b01; // INCR
+    // AXI4 write address channel
+    assign axi_awid = current_source;
+    assign axi_awaddr = current_address;
+    assign axi_awlen = (current_size == 6'h3) ? 8'h0 : 8'h1; // Single transfer for now
+    assign axi_awsize = current_size[2:0];
+    assign axi_awburst = 2'b01; // INCR burst type
     assign axi_awlock = 1'b0;
-    assign axi_awcache = 4'b0011;
-    assign axi_awprot = 3'b000;
+    assign axi_awcache = 4'h0;
+    assign axi_awprot = 3'h0;
     assign axi_awqos = 4'h0;
     assign axi_awregion = 4'h0;
-    assign axi_awvalid = (state_q == WRITE_ADDR);
+    assign axi_awvalid = (state == WRITE);
 
-    // AXI4 Write Data Channel
-    assign axi_wid = id_q;
-    assign axi_wdata = data_q;
-    assign axi_wstrb = mask_q;
-    assign axi_wlast = 1'b1;
-    assign axi_wvalid = (state_q == WRITE_DATA);
+    // TileLink-UL response channel
+    assign tl_d_address = current_address;
+    assign tl_d_data = current_data;
+    assign tl_d_valid = (state == RESPONSE);
+    assign tl_d_source = current_source;
+    assign tl_d_sink = '0; // Not used in this implementation
+    assign tl_d_error = (current_corrupt != 0) ? 2'b01 : 2'b00;
+    assign tl_d_opcode = current_opcode;
+    assign tl_d_param = current_param[1:0]; // Truncate to 2 bits
+    assign tl_d_corrupt = current_corrupt;
 
-    // AXI4 Write Response Channel
-    assign axi_bready = (state_q == WRITE_RESP);
-
-    // AXI4 Read Address Channel
-    assign axi_arid = id_q;
-    assign axi_araddr = addr_q;
-    assign axi_arlen = 8'h0; // Single transfer
-    assign axi_arsize = size_q;
-    assign axi_arburst = 2'b01; // INCR
-    assign axi_arlock = 1'b0;
-    assign axi_arcache = 4'b0011;
-    assign axi_arprot = 3'b000;
-    assign axi_arqos = 4'h0;
-    assign axi_arregion = 4'h0;
-    assign axi_arvalid = (state_q == READ_ADDR);
-
-    // AXI4 Read Data Channel
-    assign axi_rready = (state_q == READ_DATA);
-
-    // TileLink-UL Response Channel
-    assign tl_d_valid = (state_q == READ_DATA && axi_rvalid && axi_rlast) ||
-                       (state_q == WRITE_RESP && axi_bvalid);
-    assign tl_d_source = source_q;
-    assign tl_d_sink = '0;
-    assign tl_d_error = (state_q == READ_DATA) ? axi_rresp : axi_bresp;
-    assign tl_d_opcode = (state_q == READ_DATA) ? 3'b010 : 3'b000; // AccessAckData for read, AccessAck for write
-    assign tl_d_param = '0;
-    assign tl_d_corrupt = '0;
-    assign tl_d_address = addr_q;
-    assign tl_d_data = (state_q == READ_DATA) ? axi_rdata : '0;
-
-    // TileLink-UL Request Channel
-    assign tl_a_ready = (state_q == IDLE);
+    // TileLink-UL ready signal
+    assign tl_a_ready = (state == IDLE);
 
 endmodule 
